@@ -92,6 +92,64 @@ int sys_uptime(void)
   return xticks;
 }
 
+int failed_conditions(uint addr, int length, int flags, int *fd) {
+  // Check length conditions
+  if(length <= 0) return FAILED;
+  // Check flags conditions
+  if(!(flags & MAP_FIXED) || !(flags & MAP_SHARED)) return FAILED;
+  // Check address conditions
+  if(addr % PGSIZE) return FAILED;
+  if (addr < 0x60000000 || addr + length >= 0x80000000) return FAILED;
+  // Check file conditions
+  if (flags & MAP_ANONYMOUS)
+    *fd = -1;
+  else if (*fd < 0 || *fd >= NOFILE || myproc()->ofile[*fd] == 0)
+    return FAILED;
+  return SUCCESS;
+}
+
+int has_overlap(uint addr, int length) {
+  uint new_start = addr;
+  uint new_end = addr + length;
+
+  struct mmap_regions *current = mmap;
+  // Walk linked list to find if new mmap region intersects with existing regions
+  while (current)
+  {
+    uint start = current->block_start;
+    uint end = current->block_start + current->block_size;
+
+    if (new_start < end && new_end >= start) return FAILED;
+    if(new_start <= start && new_end >= end) return FAILED;
+
+    current = current->next;
+  }
+  return SUCCESS;
+}
+
+// Add new region to Linked List
+int map(uint addr, int length, int fd) {
+  // Check that proc has room for more mmaps
+  if (myproc()->mmap_cnt >= MAX_WMMAP_INFO) return FAILED;
+
+  // Insert node
+  struct mmap_regions *new_region = (struct mmap_regions *)kalloc();
+  if (!new_region)
+    return FAILED;
+
+  new_region->block_start = addr;
+  new_region->block_size = length;
+  new_region->pid = myproc()->pid;
+  new_region->allocated_count = 0;
+  new_region->f = fd >= 0 ? filedup(myproc()->ofile[fd]) : 0;
+  new_region->next = mmap;
+  mmap = new_region;
+  mmap_list_length++;
+  myproc()->mmap_cnt++;
+
+  return SUCCESS;
+}
+
 int sys_wmap(void)
 {
   uint addr;
@@ -103,62 +161,86 @@ int sys_wmap(void)
       argint(3, &fd) < 0)
     return FAILED;
 
-  if (length <= 0)
-    return FAILED;
-
-  if (!(flags & MAP_FIXED))
-    return FAILED;
-
-  if (!(flags & MAP_SHARED))
-    return FAILED;
-
-  if (addr % PGSIZE != 0)
-    return FAILED;
-
-  if (addr < 0x60000000 || addr + length >= 0x80000000)
-    return FAILED;
-
-  if (flags & MAP_ANONYMOUS)
-    fd = -1;
-  else if (fd < 0 || fd >= NOFILE || myproc()->ofile[fd] == 0)
-    return FAILED;
-
-  uint new_start = addr;
-  uint new_end = addr + length;
-
-  struct mmap_regions *current = mmap;
-  // Walk linked list to find if new mmap region intersects with existing regions
-  while (current)
-  {
-    uint start = current->block_start;
-    uint end = current->block_start + current->block_size;
-
-    if (new_start < end && new_end > start)
-      return FAILED;
-
-    current = current->next;
-  }
-
-  if (myproc()->mmap_cnt >= MAX_WMMAP_INFO)
-    return FAILED;
-
-  // Add new mmap region to mmap linked list
-  struct mmap_regions *new_region = (struct mmap_regions *)kalloc();
-  if (!new_region)
-    return FAILED;
-
-  new_region->block_start = addr;
-  new_region->block_size = length;
-  new_region->next = mmap;
-  new_region->pid = myproc()->pid;
-  new_region->allocated_count = 0;
-  new_region->f = fd > 0 ? filedup(myproc()->ofile[fd]) : 0;
-  new_region->fd = fd;
-  mmap = new_region;
-  mmap_list_length++;
-  myproc()->mmap_cnt++;
+  if(failed_conditions(addr, length, flags, &fd)) return FAILED;
+  if(has_overlap(addr, length)) return FAILED;
+  if(map(addr, length, fd)) return FAILED;
 
   return addr;
+}
+
+int block_found_and_remove(uint addr, struct mmap_regions **current, struct mmap_regions **prev) {
+  while (*current)
+  {
+    if (addr == (*current)->block_start)
+    {
+      if(*prev && *current) {
+        (*prev)->next = (*current)->next;
+      } else if(*current) {
+        mmap = (*current)->next;
+      }
+
+      mmap_list_length--;
+      myproc()->mmap_cnt--;
+      return SUCCESS;
+    }
+
+    *prev = *current;
+    *current = (*current)->next;
+  }
+  return FAILED;
+}
+
+int write_page_to_file(struct file *f, uint block_start, uint page_addr, struct mmap_regions *current) {
+  
+  uint offset;
+  uint bytes_to_write;
+  
+  if(f) {
+    offset = page_addr - block_start;
+    bytes_to_write = (block_start + current->block_size - page_addr < PGSIZE) ? block_start + current->block_size - page_addr : PGSIZE;
+    ilock(f->ip);
+    begin_op();
+    if(writei(f->ip, (char*)page_addr, offset, bytes_to_write) < bytes_to_write) {
+      end_op();
+      iunlock(f->ip);
+      return FAILED;
+    }
+    end_op();
+    iunlock(f->ip);
+  }
+  return SUCCESS;
+}
+
+int unmap_pages(uint addr, struct mmap_regions *current) {
+  uint physical_address;
+
+  for (uint i = addr; i < addr + current->block_size; i += PGSIZE)
+  {
+    pte_t *pte = walkpgdir(myproc()->pgdir, (void *)i, 0);
+    // Check to make sure page table entry exists and is valid
+    if (pte && (*pte & PTE_P))
+    {
+      // Write page into file if page is allocated
+      if (write_page_to_file(current->f, addr, i, current) == FAILED) return FAILED;
+
+      physical_address = PTE_ADDR(*pte);
+      kfree(P2V(physical_address));
+      *pte = 0;
+    }
+  }
+  return SUCCESS;
+}
+
+int unmap_helper(uint addr) {
+
+  struct mmap_regions *current = mmap;
+  struct mmap_regions *prev = 0;
+
+  if (block_found_and_remove(addr, &current, &prev) == FAILED) return FAILED;
+  if (unmap_pages(addr, current) == FAILED) return FAILED;
+
+  kfree((char *)current);
+  return SUCCESS;
 }
 
 int sys_wunmap(void)
@@ -168,62 +250,8 @@ int sys_wunmap(void)
     return FAILED;
   if (addr % PGSIZE != 0)
     return FAILED;
-  int map_found = 0;
-
-  struct mmap_regions *current = mmap;
-  struct mmap_regions *prev = 0;
-  while (current)
-  {
-    if (addr == current->block_start)
-    {
-      map_found = 1;
-      break;
-    }
-
-    prev = current;
-    current = current->next;
-  }
-
-  if (!map_found)
-    return FAILED;
-
-  // Check that file descriptor is valid and that fd is referring to a valid open file
-  struct file *f = 0;
-  if(current->fd >= 0) {
-    if(!(f = current->f)) {
-      return FAILED;
-    }
-  }
-
-  uint physical_address;
-  uint offset;
-  uint bytes_to_write;
-  for (uint i = addr; i < addr + current->block_size; i += PGSIZE)
-  {
-    pte_t *pte = walkpgdir(myproc()->pgdir, (void *)i, 0);
-    // Check to make sure page table entry exists and is valid
-    if (pte && (*pte & PTE_P))
-    {
-      // Write page into file if page is allocated
-      if(current->fd >= 0) {
-        offset = i - addr;
-        bytes_to_write = addr + current->block_size - i > PGSIZE ? PGSIZE : addr + current->block_size - i;
-        ilock(f->ip);
-        writei(f->ip, (char*)i, offset, PGSIZE);
-        iunlock(f->ip);
-      }
-
-      physical_address = PTE_ADDR(*pte);
-      kfree(P2V(physical_address));
-      *pte = 0;
-    }
-  }
-
-  prev->next = current->next;
-  mmap_list_length--;
-  myproc()->mmap_cnt--;
-  kfree(P2V(current));
-  return SUCCESS;
+  
+  return unmap_helper(addr);
 }
 
 int sys_va2pa(void)
@@ -254,13 +282,12 @@ int sys_getwmapinfo(void)
   {
     if (current->pid == myproc()->pid)
     {
-      (wminfo->addr)[list_index] = current->block_start;
-      (wminfo->length)[list_index] = current->block_size;
+      (wminfo->addr)[list_index] = (int)(current->block_start);
+      (wminfo->length)[list_index] = (int)(current->block_size);
       (wminfo->n_loaded_pages)[list_index] = current->allocated_count;
       list_index++;
-
-      current = current->next;
     }
+    current = current->next;
   }
   return SUCCESS;
 }

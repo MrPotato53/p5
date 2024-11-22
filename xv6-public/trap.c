@@ -8,6 +8,9 @@
 #include "traps.h"
 #include "spinlock.h"
 #include "wmap.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
@@ -33,6 +36,59 @@ void
 idtinit(void)
 {
   lidt(idt, sizeof(idt));
+}
+
+// Helper Functions:
+
+// Finds out whether the fault address is in the linked list, changes linked list node to the one that contains it
+int linked_list_check(uint addr, struct mmap_regions **node) {
+  while(*node) {
+    uint start = (*node)->block_start;
+    uint end = (*node)->block_start + (*node)->block_size;
+
+    // Find out if page fault is from an existing mapped region
+    if (addr >= start && addr < end) {
+      return SUCCESS;
+    }
+    *node = (*node)->next;
+  }
+  return FAILED;
+}
+
+// Allocates a new page and maps the faulting page to it. Returns pointer to mapped page
+char * map_page(uint addr, struct mmap_regions *node) {
+  // Get a free page
+  char *mem = kalloc();
+  if (mem == 0) {
+    return 0;
+  }
+
+  memset(mem, 0, PGSIZE);
+
+  // Map virtual address to page
+  if (mappages(myproc()->pgdir, (void*)PGROUNDDOWN(addr), PGSIZE, V2P(mem), PTE_W | PTE_U) < 0) {
+    kfree(mem);
+    return 0;
+  }
+
+  node->allocated_count++;
+  return mem;
+}
+
+// Checks if valid file exists, then loads correct offset from file into just allocated page
+int load_page_from_file(uint addr, struct mmap_regions *node) {
+  // Read memory from file
+  if(!(node->f)) return SUCCESS;
+
+  uint offset = PGROUNDDOWN(addr) - node->block_start;
+  ilock(node->f->ip);
+  if(readi(node->f->ip, (char*)PGROUNDDOWN(addr), offset, PGSIZE) < 0) {
+    iunlock(node->f->ip);
+    return FAILED;
+  }
+  iunlock(node->f->ip);
+  return SUCCESS;
+
 }
 
 //PAGEBREAK: 41
@@ -81,54 +137,29 @@ trap(struct trapframe *tf)
     lapiceoi();
     break;
   case T_PGFLT:
+    // cprintf("Page Fault: trapno=%d, eip=0x%x, cr2=0x%x, err=%d\n", tf->trapno, tf->eip, rcr2(), tf->err);
 
     uint fault_addr = rcr2();
-    int mapping_fault = 0;
-
     struct mmap_regions *current = mmap;
-    // Walk linked list
-    while(current) {
-      uint start = current->block_start;
-      uint end = current->block_start + current->block_size;
 
-      // Find out if page fault is from an existing mapped region
-      if (fault_addr >= start && fault_addr < end) {
-        mapping_fault = 1;
-
-        // Get a free page
-        char *mem = kalloc();
-        if (mem == 0) {
-          myproc()->killed = 1;
-          break;
-        }
-
-        // Invalidate previous pte
-        pte_t *pte = walkpgdir(myproc()->pgdir, (void *)PGROUNDDOWN(fault_addr), 0);
-        *pte = 0;
-
-        // Map virtual address to page
-        if (mappages(myproc()->pgdir, &fault_addr, PGSIZE, V2P(mem), PTE_W | PTE_U) < 0) {
-          kfree(mem);
-          myproc()->killed = 1;
-          break;
-        }
-
-        // // file code here
-        // if (current->fd && myproc()->ofile[current->fd]) {
-          
-        // }
-
-        current->allocated_count++;
+    if(!linked_list_check(fault_addr, &current)) {
+      char *page;
+      if(!(page = map_page(fault_addr, current))) {
+        myproc()->killed = 1;
         break;
       }
-      current = current->next;
-    }
 
-    if (!mapping_fault) {
-      cprintf("Segmentation Fault\n");
+      if(load_page_from_file(fault_addr, current)) {
+        kfree(page);
+        myproc()->killed = 1;
+        break;
+      }
+    } else {
+      // Address was NOT found in linked list
       myproc()->killed = 1;
-      break;
+      cprintf("Segmentation Fault\n");
     }
+    break;
 
   //PAGEBREAK: 13
   default:
@@ -149,8 +180,10 @@ trap(struct trapframe *tf)
   // Force process exit if it has been killed and is in user space.
   // (If it is still executing in the kernel, let it keep running
   // until it gets to the regular system call return.)
-  if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)
+  if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER) {
     exit();
+  }
+
 
   // Force process to give up CPU on clock tick.
   // If interrupts were on while locks held, would need to check nlock.

@@ -23,5 +23,4 @@ struct mmap_regions {
     int pid;
     int allocated_count;
     struct file *f;
-    int fd;
 };
