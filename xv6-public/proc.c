@@ -191,12 +191,13 @@ fork(void)
   }
 
   // Copy process state from proc.
-  if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
+  if((np->pgdir = copybyreferenceuvm(curproc->pgdir, curproc->sz)) == 0){
     kfree(np->kstack);
     np->kstack = 0;
     np->state = UNUSED;
     return -1;
   }
+  np->mmap_cnt = curproc->mmap_cnt;
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
@@ -228,6 +229,13 @@ fork(void)
 void
 exit(void)
 {
+  // struct proc *current = ptable.proc;
+  // cprintf("All procs: \n");
+  // while (current->pid > 0) {
+  //   cprintf("Name: %s, Mapcount: %d, PID: %d\n", current->name, current->mmap_cnt, current->pid);
+  //   current++;
+  // }
+
   struct proc *curproc = myproc();
   struct proc *p;
   int fd;

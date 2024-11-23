@@ -9,6 +9,8 @@
 #include "mmu.h"
 #include "spinlock.h"
 
+static char ref_cnts[MAX_PFN];
+
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
                    // defined by the kernel linker script in kernel.ld
@@ -23,6 +25,19 @@ struct {
   struct run *freelist;
 } kmem;
 
+struct spinlock ref_lock;
+
+void add_ref(uint index, int i) {
+  acquire(&ref_lock);
+  ref_cnts[index] += i;
+  release(&ref_lock);
+  return;
+}
+
+char get_ref(uint index) {
+  return ref_cnts[index];
+}
+
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
 // the pages mapped by entrypgdir on free list.
@@ -31,6 +46,8 @@ struct {
 void
 kinit1(void *vstart, void *vend)
 {
+  memset(ref_cnts, 0, sizeof(ref_cnts));
+  initlock(&ref_lock, "ref_lock");
   initlock(&kmem.lock, "kmem");
   kmem.use_lock = 0;
   freerange(vstart, vend);
@@ -72,8 +89,10 @@ kfree(char *v)
   r = (struct run*)v;
   r->next = kmem.freelist;
   kmem.freelist = r;
-  if(kmem.use_lock)
+  if(kmem.use_lock) {
+    add_ref(V2P((char *)r) / PGSIZE, -1);
     release(&kmem.lock);
+  }
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -89,8 +108,10 @@ kalloc(void)
   r = kmem.freelist;
   if(r)
     kmem.freelist = r->next;
-  if(kmem.use_lock)
+  if(kmem.use_lock) {
+    if(r) add_ref(V2P((char *)r) / PGSIZE, 1);
     release(&kmem.lock);
+  }
   return (char*)r;
 }
 

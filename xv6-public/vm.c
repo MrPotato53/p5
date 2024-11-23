@@ -6,9 +6,11 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
+#include "wmap.h"
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
+extern struct mmap_regions *mmap; // head of mmap linked list
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -341,6 +343,71 @@ copyuvm(pde_t *pgdir, uint sz)
       goto bad;
     }
   }
+  return d;
+
+bad:
+  freevm(d);
+  return 0;
+}
+
+int copy_mmap(struct mmap_regions *current, pde_t *pgdir, pde_t *d) {
+  pte_t *pte;
+  for(int i = current->block_start; i < current->block_start + current->block_size; i += PGSIZE) {
+    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+      panic("copyuvm: pte should exist");
+    if(!(*pte & PTE_P))
+      panic("copyuvm: page not present");
+
+    if(*pte & PTE_W) *pte |= PTE_OR;
+    *pte &= ~PTE_W;
+    if(mappages(d, (void*)i, PGSIZE, PTE_ADDR(*pte), PTE_FLAGS(*pte)) < 0) {
+      return FAILED;
+    }
+    add_ref(PTE_ADDR(*pte) / PGSIZE, 1);
+  }
+  return SUCCESS;
+}
+
+// Given a parent's process page table, create a copy
+// of it for the child that references the same physical
+// pages
+pde_t*
+copybyreferenceuvm(pde_t *pgdir, uint sz)
+{
+  pde_t *d;
+  pte_t *pte;
+  uint i;
+
+  if((d = setupkvm()) == 0)
+    return 0;
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+      panic("copyuvm: pte should exist");
+    if(!(*pte & PTE_P))
+      panic("copyuvm: page not present");
+
+    // Set originally writable bit, clear writable bit
+    if(*pte & PTE_W) *pte |= PTE_OR;
+    *pte &= ~PTE_W;
+    if(mappages(d, (void*)i, PGSIZE, PTE_ADDR(*pte), PTE_FLAGS(*pte)) < 0) {
+      goto bad;
+    }
+    add_ref(PTE_ADDR(*pte) / PGSIZE, 1);
+  }
+
+  struct mmap_regions *current = mmap;
+  while (current) {
+    if(myproc()->pid == current->pid) {
+      if(copy_mmap(current, pgdir, d) == FAILED) goto bad;
+    }
+    current = current->next;
+  }
+
+  // Flush TLB
+  if (myproc()->pgdir == 0 || !V2P(myproc()->pgdir)) {
+    panic("copybyreferenceuvm: invalid pgdir");
+  }
+  lcr3(V2P(myproc()->pgdir));
   return d;
 
 bad:

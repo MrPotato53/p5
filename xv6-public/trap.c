@@ -88,7 +88,44 @@ int load_page_from_file(uint addr, struct mmap_regions *node) {
   }
   iunlock(node->f->ip);
   return SUCCESS;
+}
 
+int map_and_copy_page(uint addr, pte_t *pte) {
+  uint pa, flags;
+  char *mem;
+
+  pa = PTE_ADDR(*pte);
+  flags = PTE_FLAGS(*pte);
+  flags |= PTE_W;
+
+  // Allocate new page and copy old page over
+  if((mem = kalloc()) == 0)
+    return FAILED;
+  memmove(mem, (char*)P2V(pa), PGSIZE);
+
+  // invalidate old pte and map new one
+  add_ref(PTE_ADDR(*pte) / PGSIZE, -1);
+  *pte = 0;
+  if(mappages(myproc()->pgdir, (void*)PGROUNDDOWN(addr), PGSIZE, V2P(mem), flags) < 0) {
+    kfree(mem);
+    return FAILED;
+  }
+  return SUCCESS;
+}
+
+int get_new_pte(uint addr, pte_t *pte) {
+  switch(get_ref(PTE_ADDR(*pte) / PGSIZE)) {
+  case 0:
+    return FAILED;
+  case 1:
+    *pte |= PTE_W;
+    break;
+  default:
+    if(map_and_copy_page(addr, pte) == FAILED) return FAILED;
+  }
+  
+  lcr3(V2P(myproc()->pgdir));
+  return SUCCESS;
 }
 
 //PAGEBREAK: 41
@@ -137,29 +174,44 @@ trap(struct trapframe *tf)
     lapiceoi();
     break;
   case T_PGFLT:
-    // cprintf("Page Fault: trapno=%d, eip=0x%x, cr2=0x%x, err=%d\n", tf->trapno, tf->eip, rcr2(), tf->err);
-
     uint fault_addr = rcr2();
-    struct mmap_regions *current = mmap;
+    pte_t *pte = walkpgdir(myproc()->pgdir, (void *)fault_addr, 0);
+    // cprintf("Page Fault: trapno=%d, eip=0x%x, cr2=0x%x, err=%d, pte=%p\n", tf->trapno, tf->eip, rcr2(), tf->err, pte);
+    if (pte == 0 || !(*pte & PTE_P)) {
+      // Mapping fault
+      struct mmap_regions *current = mmap;
 
-    if(!linked_list_check(fault_addr, &current)) {
-      char *page;
-      if(!(page = map_page(fault_addr, current))) {
-        myproc()->killed = 1;
-        break;
+      if(!linked_list_check(fault_addr, &current)) {
+        char *page;
+        if(!(page = map_page(fault_addr, current))) goto kill;
+
+        if(load_page_from_file(fault_addr, current)) {
+          kfree(page);
+          goto kill;
+        }
+      } else {
+        // Address was NOT found in linked list
+        cprintf("Segmentation Fault 2\n");
+        goto kill;
+      }
+      
+    } else if (!(*pte & PTE_W)) {
+      // Invalid write bit fault
+      if(!(*pte & PTE_OR)) {
+        // PTE_OR not being able to be set before fork? What is causing this?
+         cprintf("MyProc: %p, Name: %s", myproc(), myproc()->name);
+         cprintf("proc Dir: %p\n", myproc()->pgdir);
+        cprintf("Segmentation Fault 1\n");
+        goto kill;
       }
 
-      if(load_page_from_file(fault_addr, current)) {
-        kfree(page);
-        myproc()->killed = 1;
-        break;
-      }
-    } else {
-      // Address was NOT found in linked list
-      myproc()->killed = 1;
-      cprintf("Segmentation Fault\n");
+      if(get_new_pte(fault_addr, pte) == FAILED) goto kill;
     }
     break;
+
+    kill:
+      myproc()->killed = 1;
+      break;
 
   //PAGEBREAK: 13
   default:

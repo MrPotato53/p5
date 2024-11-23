@@ -15,6 +15,82 @@
 struct mmap_regions *mmap = 0;
 int mmap_list_length = 0;
 
+// wunmap helpers (need to be above exit)
+int block_found_and_remove(uint addr, struct mmap_regions **current, struct mmap_regions **prev) {
+  while (*current)
+  {
+    if (addr == (*current)->block_start)
+    {
+      if(*prev && *current) {
+        (*prev)->next = (*current)->next;
+      } else if(*current) {
+        mmap = (*current)->next;
+      }
+
+      mmap_list_length--;
+      myproc()->mmap_cnt--;
+      return SUCCESS;
+    }
+
+    *prev = *current;
+    *current = (*current)->next;
+  }
+  return FAILED;
+}
+
+int write_page_to_file(struct file *f, uint block_start, uint page_addr, struct mmap_regions *current) {
+  
+  uint offset;
+  uint bytes_to_write;
+  
+  if(f) {
+    offset = page_addr - block_start;
+    bytes_to_write = (block_start + current->block_size - page_addr < PGSIZE) ? block_start + current->block_size - page_addr : PGSIZE;
+    ilock(f->ip);
+    begin_op();
+    if(writei(f->ip, (char*)page_addr, offset, bytes_to_write) < bytes_to_write) {
+      end_op();
+      iunlock(f->ip);
+      return FAILED;
+    }
+    end_op();
+    iunlock(f->ip);
+  }
+  return SUCCESS;
+}
+
+int unmap_pages(uint addr, struct mmap_regions *current) {
+  uint physical_address;
+
+  for (uint i = addr; i < addr + current->block_size; i += PGSIZE)
+  {
+    pte_t *pte = walkpgdir(myproc()->pgdir, (void *)i, 0);
+    // Check to make sure page table entry exists and is valid
+    if (pte && (*pte & PTE_P))
+    {
+      // Write page into file if page is allocated
+      if (write_page_to_file(current->f, addr, i, current) == FAILED) return FAILED;
+
+      physical_address = PTE_ADDR(*pte);
+      kfree(P2V(physical_address));
+      *pte = 0;
+    }
+  }
+  return SUCCESS;
+}
+
+int unmap_helper(uint addr) {
+
+  struct mmap_regions *current = mmap;
+  struct mmap_regions *prev = 0;
+
+  if (block_found_and_remove(addr, &current, &prev) == FAILED) return FAILED;
+  if (unmap_pages(addr, current) == FAILED) return FAILED;
+
+  kfree((char *)current);
+  return SUCCESS;
+}
+
 int sys_fork(void)
 {
   return fork();
@@ -22,6 +98,17 @@ int sys_fork(void)
 
 int sys_exit(void)
 {
+  struct mmap_regions *current = mmap;
+  uint start_addr;
+  int pid;
+  while (current) {
+    start_addr = current->block_start;
+    pid = current->pid;
+    current = current->next;
+    if(myproc()->pid == pid) {
+      unmap_helper(start_addr);
+    }
+  }
   exit();
   return 0; // not reached
 }
@@ -168,81 +255,7 @@ int sys_wmap(void)
   return addr;
 }
 
-int block_found_and_remove(uint addr, struct mmap_regions **current, struct mmap_regions **prev) {
-  while (*current)
-  {
-    if (addr == (*current)->block_start)
-    {
-      if(*prev && *current) {
-        (*prev)->next = (*current)->next;
-      } else if(*current) {
-        mmap = (*current)->next;
-      }
-
-      mmap_list_length--;
-      myproc()->mmap_cnt--;
-      return SUCCESS;
-    }
-
-    *prev = *current;
-    *current = (*current)->next;
-  }
-  return FAILED;
-}
-
-int write_page_to_file(struct file *f, uint block_start, uint page_addr, struct mmap_regions *current) {
-  
-  uint offset;
-  uint bytes_to_write;
-  
-  if(f) {
-    offset = page_addr - block_start;
-    bytes_to_write = (block_start + current->block_size - page_addr < PGSIZE) ? block_start + current->block_size - page_addr : PGSIZE;
-    ilock(f->ip);
-    begin_op();
-    if(writei(f->ip, (char*)page_addr, offset, bytes_to_write) < bytes_to_write) {
-      end_op();
-      iunlock(f->ip);
-      return FAILED;
-    }
-    end_op();
-    iunlock(f->ip);
-  }
-  return SUCCESS;
-}
-
-int unmap_pages(uint addr, struct mmap_regions *current) {
-  uint physical_address;
-
-  for (uint i = addr; i < addr + current->block_size; i += PGSIZE)
-  {
-    pte_t *pte = walkpgdir(myproc()->pgdir, (void *)i, 0);
-    // Check to make sure page table entry exists and is valid
-    if (pte && (*pte & PTE_P))
-    {
-      // Write page into file if page is allocated
-      if (write_page_to_file(current->f, addr, i, current) == FAILED) return FAILED;
-
-      physical_address = PTE_ADDR(*pte);
-      kfree(P2V(physical_address));
-      *pte = 0;
-    }
-  }
-  return SUCCESS;
-}
-
-int unmap_helper(uint addr) {
-
-  struct mmap_regions *current = mmap;
-  struct mmap_regions *prev = 0;
-
-  if (block_found_and_remove(addr, &current, &prev) == FAILED) return FAILED;
-  if (unmap_pages(addr, current) == FAILED) return FAILED;
-
-  kfree((char *)current);
-  return SUCCESS;
-}
-
+// wunmap helpers at top of file
 int sys_wunmap(void)
 {
   uint addr;

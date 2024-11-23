@@ -95,10 +95,13 @@ struct segdesc {
 #define PTE_W           0x002   // Writeable
 #define PTE_U           0x004   // User
 #define PTE_PS          0x080   // Page Size
+#define PTE_OR          0x100   // Originally Writable (before fork)
 
 // Address in page table or page directory entry
 #define PTE_ADDR(pte)   ((uint)(pte) & ~0xFFF)
 #define PTE_FLAGS(pte)  ((uint)(pte) &  0xFFF)
+
+#define MAX_PFN         1048576 // Max number of page frames
 
 #ifndef __ASSEMBLER__
 typedef uint pte_t;

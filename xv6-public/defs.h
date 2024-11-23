@@ -64,6 +64,8 @@ extern uchar    ioapicid;
 void            ioapicinit(void);
 
 // kalloc.c
+void            add_ref(uint index, int i);
+char            get_ref(uint index);
 char*           kalloc(void);
 void            kfree(char*);
 void            kinit1(void*, void*);
@@ -181,6 +183,7 @@ void            freevm(pde_t*);
 void            inituvm(pde_t*, char*, uint);
 int             loaduvm(pde_t*, char*, struct inode*, uint, uint, int);
 pde_t*          copyuvm(pde_t*, uint);
+pde_t*          copybyreferenceuvm(pde_t*, uint);
 void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
