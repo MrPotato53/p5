@@ -195,17 +195,19 @@ trap(struct trapframe *tf)
         goto kill;
       }
       
-    } else if (!(*pte & PTE_W)) {
-      // Invalid write bit fault
-      if(!(*pte & PTE_OR)) {
-        // PTE_OR not being able to be set before fork? What is causing this?
-        // cprintf("MyProc: %p, Name: %s", myproc(), myproc()->name);
-        // cprintf("proc Dir: %p\n", myproc()->pgdir);
-        cprintf("Segmentation Fault\n");
-        goto kill;
-      }
+    // } else if (!(*pte & PTE_W)) {
+    //   // Invalid write bit fault
+    //   if(!(*pte & PTE_OR)) {
+    //     // PTE_OR not being able to be set before fork? What is causing this?
+    //     // cprintf("MyProc: %p, Name: %s", myproc(), myproc()->name);
+    //     // cprintf("proc Dir: %p\n", myproc()->pgdir);
+    //     cprintf("Segmentation Fault\n");
+    //     goto kill;
+    //   }
 
-      // if(get_new_pte(fault_addr, pte) == FAILED) goto kill;
+    //   if(get_new_pte(fault_addr, pte) == FAILED) goto kill;
+    } else {
+      cprintf("Segmentation Fault\n");
       goto kill;
     }
     break;
