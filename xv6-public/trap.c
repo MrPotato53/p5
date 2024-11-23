@@ -177,7 +177,7 @@ trap(struct trapframe *tf)
     uint fault_addr = rcr2();
     pte_t *pte = walkpgdir(myproc()->pgdir, (void *)fault_addr, 0);
     // cprintf("Page Fault: trapno=%d, eip=0x%x, cr2=0x%x, err=%d, pte=%p\n", tf->trapno, tf->eip, rcr2(), tf->err, pte);
-    if (pte == 0 || !(*pte & PTE_P)) {
+    if (pte == 0 || !(*pte & PTE_P) || !fault_addr) {
       // Mapping fault
       struct mmap_regions *current = mmap;
 
@@ -191,7 +191,7 @@ trap(struct trapframe *tf)
         }
       } else {
         // Address was NOT found in linked list
-        cprintf("Segmentation Fault 2\n");
+        cprintf("Segmentation Fault\n");
         goto kill;
       }
       
@@ -199,13 +199,14 @@ trap(struct trapframe *tf)
       // Invalid write bit fault
       if(!(*pte & PTE_OR)) {
         // PTE_OR not being able to be set before fork? What is causing this?
-         cprintf("MyProc: %p, Name: %s", myproc(), myproc()->name);
-         cprintf("proc Dir: %p\n", myproc()->pgdir);
-        cprintf("Segmentation Fault 1\n");
+        // cprintf("MyProc: %p, Name: %s", myproc(), myproc()->name);
+        // cprintf("proc Dir: %p\n", myproc()->pgdir);
+        cprintf("Segmentation Fault\n");
         goto kill;
       }
 
-      if(get_new_pte(fault_addr, pte) == FAILED) goto kill;
+      // if(get_new_pte(fault_addr, pte) == FAILED) goto kill;
+      goto kill;
     }
     break;
 

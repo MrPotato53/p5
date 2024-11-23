@@ -98,17 +98,6 @@ int sys_fork(void)
 
 int sys_exit(void)
 {
-  struct mmap_regions *current = mmap;
-  uint start_addr;
-  int pid;
-  while (current) {
-    start_addr = current->block_start;
-    pid = current->pid;
-    current = current->next;
-    if(myproc()->pid == pid) {
-      unmap_helper(start_addr);
-    }
-  }
   exit();
   return 0; // not reached
 }

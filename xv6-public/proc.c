@@ -6,6 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "wmap.h"
 
 struct {
   struct spinlock lock;
@@ -19,6 +20,8 @@ extern void forkret(void);
 extern void trapret(void);
 
 static void wakeup1(void *chan);
+
+extern struct mmap_regions *mmap; // head of mmap linked list
 
 void
 pinit(void)
@@ -191,7 +194,9 @@ fork(void)
   }
 
   // Copy process state from proc.
-  if((np->pgdir = copybyreferenceuvm(curproc->pgdir, curproc->sz)) == 0){
+  // if((np->pgdir = copybyreferenceuvm(curproc->pgdir, curproc->sz)) == 0){
+  if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
+
     kfree(np->kstack);
     np->kstack = 0;
     np->state = UNUSED;
@@ -235,6 +240,18 @@ exit(void)
   //   cprintf("Name: %s, Mapcount: %d, PID: %d\n", current->name, current->mmap_cnt, current->pid);
   //   current++;
   // }
+
+  struct mmap_regions *current = mmap;
+  uint start_addr;
+  int pid;
+  while (current) {
+    start_addr = current->block_start;
+    pid = current->pid;
+    current = current->next;
+    if(myproc()->pid == pid) {
+      unmap_helper(start_addr);
+    }
+  }
 
   struct proc *curproc = myproc();
   struct proc *p;

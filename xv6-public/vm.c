@@ -120,6 +120,7 @@ static struct kmap {
 pde_t*
 setupkvm(void)
 {
+  // cprintf("setupkvm");
   pde_t *pgdir;
   struct kmap *k;
 
@@ -300,6 +301,7 @@ freevm(pde_t *pgdir)
       kfree(v);
     }
   }
+  // cprintf("free pgdir");
   kfree((char*)pgdir);
 }
 
@@ -404,10 +406,10 @@ copybyreferenceuvm(pde_t *pgdir, uint sz)
   }
 
   // Flush TLB
-  if (myproc()->pgdir == 0 || !V2P(myproc()->pgdir)) {
+  if (pgdir == 0 || !V2P(pgdir)) {
     panic("copybyreferenceuvm: invalid pgdir");
   }
-  lcr3(V2P(myproc()->pgdir));
+  lcr3(V2P(pgdir));
   return d;
 
 bad:

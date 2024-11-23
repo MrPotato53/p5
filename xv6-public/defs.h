@@ -64,7 +64,7 @@ extern uchar    ioapicid;
 void            ioapicinit(void);
 
 // kalloc.c
-void            add_ref(uint index, int i);
+int             add_ref(uint index, int i);
 char            get_ref(uint index);
 char*           kalloc(void);
 void            kfree(char*);
@@ -105,6 +105,7 @@ int             pipewrite(struct pipe*, char*, int);
 
 //PAGEBREAK: 16
 // proc.c
+int             unmap_helper(uint addr);
 int             cpuid(void);
 void            exit(void);
 int             fork(void);

@@ -27,11 +27,13 @@ struct {
 
 struct spinlock ref_lock;
 
-void add_ref(uint index, int i) {
+int add_ref(uint index, int i) {
+  // cprintf("index;%x, change: %d, curvalue: %d\n",index * PGSIZE, i, ref_cnts[index]);
   acquire(&ref_lock);
   ref_cnts[index] += i;
+  int value = ref_cnts[index];
   release(&ref_lock);
-  return;
+  return value;
 }
 
 char get_ref(uint index) {
@@ -84,13 +86,18 @@ kfree(char *v)
   // Fill with junk to catch dangling refs.
   memset(v, 1, PGSIZE);
 
-  if(kmem.use_lock)
-    acquire(&kmem.lock);
-  r = (struct run*)v;
-  r->next = kmem.freelist;
-  kmem.freelist = r;
+  int count = 0;
+
   if(kmem.use_lock) {
-    add_ref(V2P((char *)r) / PGSIZE, -1);
+    acquire(&kmem.lock);
+    count = add_ref(V2P(v) / PGSIZE, -1);
+  }
+  if(count == 0) {
+    r = (struct run*)v;
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+  }
+  if(kmem.use_lock) {
     release(&kmem.lock);
   }
 }
@@ -109,7 +116,9 @@ kalloc(void)
   if(r)
     kmem.freelist = r->next;
   if(kmem.use_lock) {
-    if(r) add_ref(V2P((char *)r) / PGSIZE, 1);
+    if(r) {
+      add_ref(V2P((char *)r) / PGSIZE, 1);
+    }
     release(&kmem.lock);
   }
   return (char*)r;
