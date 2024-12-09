@@ -176,7 +176,9 @@ trap(struct trapframe *tf)
   case T_PGFLT:
     uint fault_addr = rcr2();
     pte_t *pte = walkpgdir(myproc()->pgdir, (void *)fault_addr, 0);
-    // cprintf("Page Fault: trapno=%d, eip=0x%x, cr2=0x%x, err=%d, pte=%p\n", tf->trapno, tf->eip, rcr2(), tf->err, pte);
+    cprintf("Page Fault: trapno=%d, eip=0x%x, cr2=0x%x, err=%d, pte=%p\n", tf->trapno, tf->eip, rcr2(), tf->err, pte);
+    cprintf("pgdir value: %p\n", myproc()->pgdir);
+
     if (pte == 0 || !(*pte & PTE_P) || !fault_addr) {
       // Mapping fault
       struct mmap_regions *current = mmap;
@@ -195,20 +197,17 @@ trap(struct trapframe *tf)
         goto kill;
       }
       
-    // } else if (!(*pte & PTE_W)) {
-    //   // Invalid write bit fault
-    //   if(!(*pte & PTE_OR)) {
-    //     // PTE_OR not being able to be set before fork? What is causing this?
-    //     // cprintf("MyProc: %p, Name: %s", myproc(), myproc()->name);
-    //     // cprintf("proc Dir: %p\n", myproc()->pgdir);
-    //     cprintf("Segmentation Fault\n");
-    //     goto kill;
-    //   }
+    } else if (!(*pte & PTE_W)) {
+      // Invalid write bit fault
+      if(!(*pte & PTE_OR)) {
+        // PTE_OR not being able to be set before fork? What is causing this?
+        // cprintf("MyProc: %p, Name: %s", myproc(), myproc()->name);
+        // cprintf("proc Dir: %p\n", myproc()->pgdir);
+        cprintf("Segmentation Fault\n");
+        goto kill;
+      }
 
-    //   if(get_new_pte(fault_addr, pte) == FAILED) goto kill;
-    } else {
-      cprintf("Segmentation Fault\n");
-      goto kill;
+      if(get_new_pte(fault_addr, pte) == FAILED) goto kill;
     }
     break;
 

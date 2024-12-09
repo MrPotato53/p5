@@ -260,12 +260,12 @@ int sys_va2pa(void)
 {
   uint addr;
   if (argint(0, (int *)&addr) < 0)
-    return FAILED;
+    return -1;
 
   pte_t *pte = walkpgdir(myproc()->pgdir, (void *)addr, 0);
 
   if (pte == 0 || !(*pte & PTE_P))
-    return FAILED;
+    return -1;
 
   return PTE_ADDR(*pte) | (*pte & 0xFFF);
 }
